@@ -1,0 +1,102 @@
+function [covarEst,uEst] = pred_step(uPrev,covarPrev,angVel,acc,dt)
+%% BEFORE RUNNING THE CODE CHANGE NAME TO pred_step
+    %% Parameter Definition
+    % uPrev - is the mean of the prev state
+    %covarPrev - covar of the prev state
+    %angVel - angular velocity input at the time step
+    %acc - acceleration at the timestep
+    %dt - difference in time 
+
+
+    % Initialising values for n, nq, n_Prime, alpha, k, beta
+    n=15;
+    nq=12;
+    n_Prime = n+nq;  % 27
+    alpha = 0.001;
+    k = 1;
+    beta = 2;
+    
+    % Computing sigma points: 2*n_prime + 1 = 55
+
+    lambdaDash = (alpha^2) * (n_Prime + k) - n_Prime;
+    
+    % Computing Qd for P_aug
+    Q = 0.002;
+    Qd = dt*(eye(12) * Q);
+    P_aug = [covarPrev, zeros(15,12); zeros(12,15), Qd];
+    sqrtP_aug = chol(P_aug);   %Required for Step1
+    
+    % Setting First Coloumn of the X_aug Matrix(27X55) Since UPrev has 15
+    % rows in order to match the dimension of the X_aug matrix we add 12
+    % tailing zeros
+    X_aug_setter = [uPrev; zeros(12,1)]; 
+    % We create a  zero matrix for Plucgging in the values of X_aug
+    X_aug = zeros(n_Prime, ((2*n_Prime)+1));
+    X_aug(:,1) = X_aug_setter;
+    for i = 2:1:(n_Prime+1)
+        X_aug(:,i) = X_aug_setter + sqrt(n_Prime + lambdaDash) * sqrtP_aug(:,i-1);
+        X_aug(:,(i+n_Prime)) = X_aug_setter - sqrt(n_Prime + lambdaDash) * sqrtP_aug(:,i-1);
+    end
+
+
+    % Next we propogate the sigma points
+    X_t = zeros(15, ((2*n_Prime)+1)); %We create a 15X55 matrix for plugging in vals
+    % We create a for loop for getting the X_t
+    for i = 1:1:((2*n_Prime)+1)
+        x1 = X_aug(1:3, i);           %position
+        x2 = X_aug(4:6, i);           %orientation
+        x3 = X_aug(7:9, i);           %linear velocity
+        x4 = X_aug(10:12, i);         %gyroscope bias  
+        x5 = X_aug(13:15, i);         %accelerometer bias
+        ng = X_aug(16:18, i);         %noise in gyroscope
+        na = X_aug(19:21, i);         %noise in accelerometer
+        nbg = X_aug(22:24, i);        %Drift in the gyroscope bias 
+        nba = X_aug(25:27, i);        %Drift in the accelerometer bias 
+       
+        % Gi Formula (inverse of G)
+        Gi=[(cos(X_aug(6,i))*sin(X_aug(5,i)))/(cos(X_aug(5,i))*cos(X_aug(6,i))^2 + cos(X_aug(5,i))*sin(X_aug(6,i))^2), (sin(X_aug(6,i))*sin(X_aug(5,i)))/(cos(X_aug(5,i))*cos(X_aug(6,i))^2 + cos(X_aug(5,i))*sin(X_aug(6,i))^2), 1;
+                                          -sin(X_aug(6,i))/(cos(X_aug(6,i))^2 + sin(X_aug(6,i))^2),                                    cos(X_aug(6,i))/(cos(X_aug(6,i))^2 + sin(X_aug(6,i))^2), 0;
+                  cos(X_aug(6,i))/(cos(X_aug(5,i))*cos(X_aug(6,i))^2 + cos(X_aug(5,i))*sin(X_aug(6,i))^2),              sin(X_aug(6,i))/(cos(X_aug(5,i))*cos(X_aug(6,i))^2 + cos(X_aug(5,i))*sin(X_aug(6,i))^2), 0];
+       
+        % R formula (Current body ZYX)
+        R = [cos(X_aug(6,i))*cos(X_aug(5,i)), cos(X_aug(6,i))*sin(X_aug(4,i))*sin(X_aug(5,i)) - cos(X_aug(4,i))*sin(X_aug(6,i)), sin(X_aug(6,i))*sin(X_aug(4,i)) + cos(X_aug(6,i))*cos(X_aug(4,i))*sin(X_aug(5,i));
+             cos(X_aug(5,i))*sin(X_aug(6,i)), cos(X_aug(6,i))*cos(X_aug(4,i)) + sin(X_aug(6,i))*sin(X_aug(4,i))*sin(X_aug(5,i)), cos(X_aug(4,i))*sin(X_aug(6,i))*sin(X_aug(5,i)) - cos(X_aug(6,i))*sin(X_aug(4,i));
+                           -sin(X_aug(5,i)),                                                cos(X_aug(5,i))*sin(X_aug(4,i)),                                               cos(X_aug(4,i))*cos(X_aug(5,i))];
+      
+        % Obtaining the fxun elements;  fxun=vertcat(x3,(Gi*(angVel-x4-ng)),(g+R*(acc-x5-na)),nbg,nba)
+        f1 = x3;
+        f2 = Gi * (angVel - x4);
+        f3 = [0;0;-9.8] + R *(acc - x5 - na); % 9.8 is only for Z axis
+        f4 = nbg;
+        f5 = nba; 
+
+        %Xt(i)=f(Xaugt-1,u,nauagt-1)
+        X_t(:,i) = [x1 + (dt * f1); 
+                    x2 + (dt * f2) - ng;
+                    x3 + (dt * f3) - na;
+                    x4 + (f4);
+                    x5 + (f5)];
+    end 
+   
+    %Weight Matrices
+    Wm0=lambdaDash / (n_Prime + lambdaDash);
+    Wmi=(1 / (2 * (n_Prime + lambdaDash))); 
+    Wc0=(lambdaDash/(n_Prime + lambdaDash)) + (1 - (alpha^2) + beta);
+    Wci=(1 / (2 * (n_Prime + lambdaDash)));
+    Wm = [Wm0, ( ones(1, 2*n_Prime)*Wmi)];
+    Wc = [Wc0, ( ones(1, 2*n_Prime)*Wci)];
+    
+    
+    
+    uEst = zeros(15,1);
+    for i = 1:1:((2*n_Prime)+1)
+        uEst = uEst + (Wm(i) * X_t(:,i));
+    end
+    covarEst = zeros(15,15);
+    for i = 1:1:((2*n_Prime)+1)
+        covarEst = covarEst + (Wc(i) * ((X_t(:,i) - uEst) * (X_t(:,i) - uEst)'));
+    end
+   
+end
+
+
